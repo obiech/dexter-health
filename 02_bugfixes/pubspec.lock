@@ -127,7 +127,7 @@ packages:
     source: sdk
     version: "0.0.0"
   flutter_lints:
-    dependency: "direct dev"
+    dependency: "direct overridden"
     description:
       name: flutter_lints
       sha256: "5398f14efa795ffb7a33e9b6a08798b26a180edac4ad7db3f231e40f82ce11e1"
@@ -161,11 +161,12 @@ packages:
   flutter_native_timezone:
     dependency: "direct main"
     description:
-      name: flutter_native_timezone
-      sha256: ed7bfb982f036243de1c068e269182a877100c994f05143c8b26a325e28c1b02
-      url: "https://pub.dev"
-    source: hosted
-    version: "2.0.0"
+      path: "."
+      ref: "feture/upgrade-flutter-3.32.4"
+      resolved-ref: e061bc59a7324a18fa15b4134b7911b879ad0434
+      url: "https://github.com/JeanmartinPV/flutter_native_timezone/"
+    source: git
+    version: "2.0.1"
   flutter_plugin_android_lifecycle:
     dependency: transitive
     description:

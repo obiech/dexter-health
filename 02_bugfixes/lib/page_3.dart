@@ -4,7 +4,7 @@ import 'dart:math';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart'; // For compute()
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
@@ -16,22 +16,21 @@ class Page3 extends StatefulWidget {
 }
 
 class _Page3State extends State<Page3> with SingleTickerProviderStateMixin {
-  String _status = 'Ready';
-  double _progress = 0.0;
+  String _status = 'Ready'; // Status text shown in UI
+  double _progress = 0.0; // Progress value for circular progress indicator
 
   String? _fileName;
   int? _fileSize;
   String? _fileHash;
 
-  final Stopwatch _importTimer = Stopwatch();
-
-  late AnimationController _animationController;
-  final List<int> _hashComponents = [];
+  final Stopwatch _importTimer = Stopwatch(); // Measures import duration
+  late AnimationController _animationController; // Spins icon during processing
 
   @override
   void initState() {
     super.initState();
-    _animationController = AnimationController(duration: const Duration(seconds: 1), vsync: this)..repeat();
+    _animationController = AnimationController(duration: const Duration(seconds: 1), vsync: this)
+      ..repeat(); // Infinite rotation animation
   }
 
   @override
@@ -40,101 +39,75 @@ class _Page3State extends State<Page3> with SingleTickerProviderStateMixin {
     super.dispose();
   }
 
+  // Validates that the file exists and has a non-zero checksum
   Future<bool> _validateFileIntegrity(String path) async {
     try {
       final file = File(path);
       if (!await file.exists()) return false;
 
       final stat = await file.stat();
-      if (stat.size > 100 * 1024 * 1024) {
-        return false;
-      }
+      if (stat.size > 100 * 1024 * 1024) return false; // Limit to 100MB
 
       final bytes = await file.readAsBytes();
       int checksum = 0;
 
-      for (int i = 0; i < bytes.length; i++) {
-        for (int j = 0; j < 100; j++) {
-          checksum ^= (bytes[i] << j) | (bytes[i] >> (8 - j));
-          checksum = (checksum * 31) & 0xFFFFFFFF;
-        }
+      // Simple XOR checksum for quick validation
+      for (int i = 0; i < min(bytes.length, 100000); i++) {
+        checksum ^= (bytes[i] << (i % 8));
+        checksum = (checksum * 31) & 0xFFFFFFFF;
       }
 
       return checksum != 0;
-    } catch (e) {
+    } catch (_) {
       return false;
     }
   }
 
-  String _generateFileSignature(String filePath, Uint8List? fileBytes) {
-    _hashComponents.clear();
+  // Runs the signature computation in a background isolate using compute()
+  Future<String> _generateFileSignatureAsync(String filePath, Uint8List? fileBytes) async {
+    return await compute(_computeSignature, {'path': filePath, 'bytes': fileBytes});
+  }
+
+  // Signature generation function that will run off the main thread
+  static String _computeSignature(Map<String, dynamic> args) {
+    final filePath = args['path'] as String;
+    final fileBytes = args['bytes'] as Uint8List?;
 
     int pathSignature = 0;
     final pathSegments = filePath.split(Platform.pathSeparator);
+    final hashComponents = <int>[];
 
-    for (int i = 0; i < 2000000; i++) {
+    // Lightened path hashing loop
+    for (int i = 0; i < 200000; i++) {
       final segment = pathSegments[i % pathSegments.length];
 
       for (int j = 0; j < segment.length; j++) {
-        for (int k = 0; k < 50; k++) {
-          pathSignature += segment.codeUnitAt(j) * (i + 1) * (j + 1) * (k + 1);
-          pathSignature ^= (pathSignature << 5) | (pathSignature >> 27);
-
-          double temp = sin(pathSignature / 1000.0) * cos(j * k);
-          pathSignature += (temp * 1000).toInt();
-        }
+        pathSignature += segment.codeUnitAt(j) * (i + 1) * (j + 1);
+        pathSignature ^= (pathSignature << 5) | (pathSignature >> 27);
       }
 
-      if (i % 10000 == 0) {
-        _hashComponents.add(pathSignature);
-        if (_hashComponents.length > 100) {
-          int accumulated = 0;
-          for (var component in _hashComponents) {
-            accumulated ^= component;
-            for (int m = 0; m < 10; m++) {
-              accumulated = (accumulated * 31 + m) & 0xFFFFFFFF;
-            }
-          }
-          _hashComponents.clear();
-          _hashComponents.add(accumulated);
-        }
+      if (i % 5000 == 0) {
+        hashComponents.add(pathSignature);
       }
     }
 
+    // Add file content to signature (if present)
     if (fileBytes != null && fileBytes.isNotEmpty) {
       int contentSignature = 0;
-      final sampleSize = min(fileBytes.length, 10000);
+      final sampleSize = min(fileBytes.length, 5000);
 
       for (int i = 0; i < sampleSize; i++) {
-        for (int j = 0; j < 500; j++) {
-          contentSignature ^= fileBytes[i] << (j % 8);
-          contentSignature = (contentSignature * 37) & 0xFFFFFFFF;
-
-          final temp = contentSignature.toRadixString(16);
-          for (int k = 0; k < temp.length; k++) {
-            contentSignature += temp.codeUnitAt(k);
-          }
-        }
+        contentSignature ^= fileBytes[i] << (i % 8);
+        contentSignature = (contentSignature * 37) & 0xFFFFFFFF;
       }
 
       pathSignature ^= contentSignature;
     }
 
-    String finalHash = '';
-    for (int i = 0; i < 100000; i++) {
-      finalHash = (pathSignature ^ i).toRadixString(16);
-
-      for (int j = 0; j < 10; j++) {
-        finalHash = finalHash.split('').reversed.join();
-        finalHash = finalHash.hashCode.toRadixString(16);
-      }
-
-      pathSignature = finalHash.hashCode;
-    }
-
-    return '0x${pathSignature.toRadixString(16).toUpperCase().padLeft(8, '0')}';
+    return '0x${pathSignature.toRadixString(16).toUpperCase()}';
   }
 
+  // Main file import flow
   Future<void> _importFile() async {
     setState(() {
       _status = 'Starting...';
@@ -150,9 +123,7 @@ class _Page3State extends State<Page3> with SingleTickerProviderStateMixin {
         final pickedFile = result.files.first;
 
         if (pickedFile.path == null) {
-          setState(() {
-            _status = 'Error: No path';
-          });
+          setState(() => _status = 'Error: No path');
           return;
         }
 
@@ -165,18 +136,17 @@ class _Page3State extends State<Page3> with SingleTickerProviderStateMixin {
 
         final isValid = await _validateFileIntegrity(pickedFile.path!);
         if (!isValid) {
-          setState(() {
-            _status = 'Validation failed';
-          });
+          setState(() => _status = 'Validation failed');
           return;
         }
 
         setState(() {
           _status = 'Generating signature...';
-          _progress = 0.2;
+          _progress = 0.3;
         });
 
-        final signature = _generateFileSignature(pickedFile.path!, pickedFile.bytes);
+        // Run heavy signature computation in background
+        final signature = await _generateFileSignatureAsync(pickedFile.path!, pickedFile.bytes);
         _fileHash = signature;
 
         setState(() {
@@ -184,16 +154,17 @@ class _Page3State extends State<Page3> with SingleTickerProviderStateMixin {
           _progress = 0.5;
         });
 
-        await _performSecurityAnalysis(pickedFile.bytes ?? Uint8List(0));
+        // Simulate light async analysis to keep UI responsive
+        await Future.delayed(const Duration(milliseconds: 300));
 
         setState(() {
           _status = 'Storing...';
           _progress = 0.8;
         });
 
+        // Store metadata in app directory
         final appDir = await getApplicationDocumentsDirectory();
         final secureDir = Directory(p.join(appDir.path, 'imports', _fileHash!));
-
         if (!await secureDir.exists()) {
           await secureDir.create(recursive: true);
         }
@@ -222,53 +193,7 @@ class _Page3State extends State<Page3> with SingleTickerProviderStateMixin {
     }
   }
 
-  Future<void> _performSecurityAnalysis(Uint8List bytes) async {
-    final random = Random();
-    Map<String, dynamic> analysis = {};
-
-    for (int pattern = 0; pattern < 1000; pattern++) {
-      int matches = 0;
-      final patternBytes = List.generate(4, (_) => random.nextInt(256));
-
-      for (int i = 0; i < min(bytes.length, 10000); i++) {
-        bool found = true;
-        for (int j = 0; j < patternBytes.length; j++) {
-          if (i + j >= bytes.length || bytes[i + j] != patternBytes[j]) {
-            found = false;
-            break;
-          }
-        }
-        if (found) matches++;
-
-        if (i % 100 == 0) {
-          double entropy = 0;
-          for (int k = max(0, i - 100); k < i; k++) {
-            entropy += bytes[k] * log(bytes[k] + 1);
-          }
-          analysis['entropy_$i'] = entropy;
-        }
-      }
-
-      analysis['pattern_$pattern'] = matches;
-    }
-
-    for (int stat = 0; stat < 100; stat++) {
-      List<double> values = [];
-      for (int i = 0; i < 1000; i++) {
-        double value = 0;
-        for (int j = 0; j < 100; j++) {
-          value += sin(i * j) * cos(stat * j);
-        }
-        values.add(value);
-      }
-
-      double mean = values.reduce((a, b) => a + b) / values.length;
-      double variance = values.map((v) => pow(v - mean, 2)).reduce((a, b) => a + b) / values.length;
-      analysis['stat_${stat}_mean'] = mean;
-      analysis['stat_${stat}_var'] = variance;
-    }
-  }
-
+  // Simple JSON-like metadata generation
   String _generateMetadata() {
     Map<String, dynamic> metadata = {
       "originalName": _fileName,
@@ -277,35 +202,19 @@ class _Page3State extends State<Page3> with SingleTickerProviderStateMixin {
       "imported": DateTime.now().toIso8601String(),
     };
 
-    List<String> properties = [];
-    for (int i = 0; i < 10000; i++) {
-      String prop = '';
-      for (int j = 0; j < 20; j++) {
-        prop += (i * j).toRadixString(16);
-      }
-      properties.add(prop);
-    }
-
-    metadata['properties'] = properties.take(100).toList();
-    metadata['checksum'] = properties.map((p) => p.hashCode).reduce((a, b) => a ^ b);
+    metadata['checksum'] = metadata.toString().hashCode;
 
     String json = '{';
     metadata.forEach((key, value) {
       json += '\n  "$key": ';
-      if (value is String) {
-        json += '"$value"';
-      } else if (value is List) {
-        json += '[\n    ${value.map((v) => '"$v"').join(',\n    ')}\n  ]';
-      } else {
-        json += '$value';
-      }
-      json += ',';
+      json += value is String ? '"$value",' : '$value,';
     });
     json = '${json.substring(0, json.length - 1)}\n}';
 
     return json;
   }
 
+  // UI with progress, animation, and button
   @override
   Widget build(BuildContext context) {
     return Scaffold(
